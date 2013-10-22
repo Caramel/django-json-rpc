@@ -7,14 +7,109 @@ from jsonrpc.types import *
 from django.core import signals
 empty_dec = lambda f: f
 try:
-  from django.views.decorators.csrf import csrf_exempt
+	from django.views.decorators.csrf import csrf_exempt
 except (NameError, ImportError):
-  csrf_exempt = empty_dec
-
+	csrf_exempt = empty_dec
+ 
+from django.core import serializers
 from django.core.serializers.json import DjangoJSONEncoder
+from django.db.models import Model
+from django.db.models.base import ModelState
+from django.db.models.query import QuerySet
+from django.core.paginator import Page
+try:
+	from haystack.query import SearchQuerySet
+	from haystack.models import SearchResult
+except (NameError, ImportError):
+	# disable haystack support
+	SearchQuerySet = SearchResult = None
+
+#from django.db.models.fields.related import RelatedManager
 
 NoneType = type(None)
 encode_kw = lambda p: dict([(str(k), v) for k, v in p.iteritems()])
+
+class DjangoEnhancedJSONEncoder(DjangoJSONEncoder):
+	def default(self, o):
+		if isinstance(o, ModelState):# or isinstance(o, RelatedManager):
+			return None
+		elif isinstance(o, QuerySet):
+			return list(o)
+		elif isinstance(o, Model):
+			# exclude private data from models output
+			d = {}
+			#print dir(o)
+			for x in dir(o):
+				if not x.startswith("_"):
+					try:
+						y = getattr(o, x)
+						if isinstance(y, Model): # don't serialise foreign keys
+							continue
+						elif callable(y):
+							if hasattr(y, 'serialise') and y.serialise:
+								d[x] = y()
+						else:
+							if not hasattr(y, 'serialise') or not y.serialise:
+								d[x] = y
+					except AttributeError: # hide access violations
+						continue
+			return d
+		elif SearchQuerySet != None and isinstance(o, SearchQuerySet):
+			# haystack
+			# pretty easy one, just return it as a list
+			return list(o)
+		elif SearchResult != None and isinstance(o, SearchResult):
+			# haystack
+			# convert all the attributes into a dict
+			d = dict(
+				app_label = o.app_label,
+				model_name = o.model_name,
+				pk = o.pk,
+				score = o.score,
+				object = o.object,
+				#model = o.model, # don't include a reference to the model prototype
+				verbose_name = o.verbose_name
+			)
+			if hasattr(o, 'highlighted'):
+				#print "highlighted = %s" % o.highlighted
+				d['highlighted'] = o.highlighted
+			return d
+		elif isinstance(o, Page):
+			# django paginator system
+			return dict(
+				has_next = o.has_next(),
+				has_previous = o.has_previous(),
+				has_other_pages = o.has_other_pages(),
+				next_page_number = o.next_page_number() if o.has_next() else None,
+				previous_page_number = o.previous_page_number() if o.has_previous() else None,
+				start_index = o.start_index(),
+				end_index = o.end_index(),
+				object_list = o.object_list,
+				number = o.number,
+				num_pages = o.paginator.num_pages,
+			
+			)
+		elif hasattr(o, '__class__'):
+			if 'ManyRelatedManager' in str(o.__class__):
+				# because ManyRelatedManager is a dynamically generate class type, it is
+				# difficult to match.
+				#
+				# so we have to take ugly stabs in the dark.
+				#
+				# lets just return a list of object ids
+				ids = []
+				for obj in o.all():
+					ids.append(obj.id)
+				return ids
+			elif 'RelatedManager' in str(o.__class__): # skip for now
+				return None
+			elif 'GenericRelatedObjectManager' in str(o.__class__): # skip for now
+				return None
+			elif 'TaggableManager' in str(o.__class__):
+				# django-taggit
+				return list(o.all().values_list('name', flat=True))
+		
+		return super(DjangoEnhancedJSONEncoder, self).default(o)
 
 def encode_kw11(p):
   if not type(p) is dict:
@@ -77,7 +172,7 @@ def validate_params(method, D):
 
 class JSONRPCSite(object):
   "A JSON-RPC Site"
-  def __init__(self, json_encoder=DjangoJSONEncoder):
+  def __init__(self, json_encoder=DjangoEnhancedJSONEncoder):
     self.urls = {}
     self.uuid = str(uuid1())
     self.version = '1.0'
@@ -85,7 +180,7 @@ class JSONRPCSite(object):
     self.register('system.describe', self.describe)
     self.set_json_encoder(json_encoder)
 
-  def set_json_encoder(self, json_encoder=DjangoJSONEncoder):
+  def set_json_encoder(self, json_encoder=DjangoEnhancedJSONEncoder):
     self.json_encoder = json_encoder
 
   def register(self, name, method):
@@ -152,6 +247,7 @@ class JSONRPCSite(object):
          (dict, str, unicode, int, long, list, set, NoneType, bool))):
         try:
           rs = encoder.default(R) # ...or something this thing supports
+          #rs = serializers.serialize('json', R)
         except TypeError, exc:
           raise TypeError("Return type not supported, for %r" % R)
 
