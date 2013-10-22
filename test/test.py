@@ -1,7 +1,10 @@
 import os
 import sys
 import unittest
-import subprocess
+try:
+  import subprocess
+except ImportError:
+  import subprocess_ as subprocess
 import time
 import urllib
 
@@ -18,8 +21,12 @@ TEST_DEFAULTS = {
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions'),
-  'DATABASE_ENGINE': 'sqlite3',
-  'DATABASE_NAME': 'test.sqlite3',
+  'DATABASES': {
+    'default': {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': 'test.sqlite3',
+      },
+  },
   'MIDDLEWARE_CLASSES': (
       'django.middleware.common.CommonMiddleware',
       'django.contrib.sessions.middleware.SessionMiddleware',
@@ -169,7 +176,7 @@ class JSONRPCFunctionalTests(unittest.TestCase):
 
 proc = None
 
-class ServiceProxyText(unittest.TestCase):      
+class ServiceProxyTest(unittest.TestCase):      
   def setUp(self):
     global proc
     if proc is None:
@@ -190,7 +197,7 @@ class ServiceProxyText(unittest.TestCase):
     try:
       proxy.jsonrpc.test(string='Hello')
     except Exception, e:
-      self.assert_(e.args[0] == 'Unsupport arg type for JSON-RPC 1.0 '
+      self.assert_(e.args[0] == 'Unsupported arg type for JSON-RPC 1.0 '
                                 '(the default version for this client, '
                                 'pass version="2.0" to use keyword arguments)')
     else:
@@ -327,8 +334,9 @@ class JSONRPCTest(unittest.TestCase):
       if not i % 2:
         self.assertEquals(D[u'result'], req[i][u'params'][0])
         self.assertEquals(D[u'id'], req[i][u'id'])
+        self.assert_(u'error' not in D)
       else:
-        self.assertEquals(D[u'result'], None)
+        self.assert_(u'result' not in D)
         self.assert_(u'error' in D)
         self.assertEquals(D[u'error'][u'code'], 500)
   
